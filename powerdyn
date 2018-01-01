@@ -1,0 +1,180 @@
+#!/usr/bin/env python
+
+from optparse import OptionParser
+from ConfigParser import SafeConfigParser
+
+import os
+import sys
+import re
+
+def adapt_query_for_sqlite3(query):
+    # WARNING: This is a hack to convert the usual pyformat strings
+    # to named ones used by sqlite3
+    return query.replace('%(', ':').replace(')s', '')
+
+usage = 'Usage: %prog [options] HOSTNAME'
+version = '%prog 0.0.1'
+
+parser = OptionParser(version=version, usage=usage)
+parser.add_option("-c", "--config", dest="conffile",
+                  help="load configuration from CONFFILE")
+parser.add_option("-v", "--verbose",
+                  action="store_true", dest="verbose",
+                  help="use verbose output")
+(settings, args) = parser.parse_args()
+
+if not settings.conffile:
+    for f in [os.path.expanduser('~/.powerdyn.conf'), '/etc/powerdyn/powerdyn.conf', './powerdyn.conf']:
+        if os.path.isfile(f):
+            settings.conffile = f
+    if not settings.conffile:
+        print "Could not find a configuration file, exiting."
+        sys.exit(1)
+
+defaults = {'domain': 'auto'}
+config = SafeConfigParser(defaults=defaults)
+config.read(settings.conffile)
+
+settings.domain = config.get('powerdyn', 'domain')
+settings.dbtype = config.get('powerdyn', 'dbtype')
+if settings.dbtype == 'mysql':
+    database = 'MySQLdb'
+    settings.dbsettings = {'host': config.get('powerdyn', 'dbhost'),
+                           'db': config.get('powerdyn', 'dbname'),
+                           'user': config.get('powerdyn', 'dbuser'),
+                           'passwd': config.get('powerdyn', 'dbpass'),
+                           }
+elif settings.dbtype == 'postgres':
+    database = 'psycopg2'
+    settings.dbsettings = {'host': config.get('powerdyn', 'dbhost'),
+                           'database': config.get('powerdyn', 'dbname'),
+                           'user': config.get('powerdyn', 'dbuser'),
+                           'password': config.get('powerdyn', 'dbpass'),
+                           }
+elif settings.dbtype == 'sqlite3':
+    database = 'sqlite3'
+    settings.dbsettings = {'database': config.get('powerdyn', 'dbname'),
+                           }
+    _GET_A = adapt_query_for_sqlite3(_GET_A)
+    _GET_AAAA = adapt_query_for_sqlite3(_GET_AAAA)
+    _GET_SOA = adapt_query_for_sqlite3(_GET_SOA)
+    _SET_A = adapt_query_for_sqlite3(_SET_A)
+    _SET_AAAA = adapt_query_for_sqlite3(_SET_AAAA)
+    _SET_SOA = adapt_query_for_sqlite3(_SET_SOA)
+else:
+    print "No supported database configured."
+    sys.exit(1)
+
+exec("import %s as database" % database)
+settings.database = database
+
+if len(args) != 1:
+    parser.print_help()
+    sys.exit(1)
+
+_GET_A = "SELECT content FROM records WHERE name=%(hostname)s AND type='A'"
+_GET_AAAA = "SELECT content FROM records WHERE name=%(hostname)s AND type='AAAA'"
+_GET_SOA = "SELECT content FROM records WHERE name=%(hostname)s AND type='SOA'"
+_GET_DOMAIN = "SELECT id FROM domains WHERE name=%(hostname)s"
+
+_SET_A = "UPDATE records SET content=%(ip)s WHERE name=%(hostname)s AND type='A'"
+_SET_AAAA = "UPDATE records SET content=%(ip)s WHERE name=%(hostname)s AND type='AAAA'"
+_SET_SOA = "UPDATE records SET content=%(soa)s WHERE name=%(hostname)s AND type='SOA'"
+
+_INSERT_A = "insert into records (domain_id, name, content, type) values ((select id from domains where name = %(domain)s), %(hostname)s, %(ip)s, 'A')"
+_INSERT_AAAA = "insert into records (domain_id, name, content, type) values ((select id from domains where name = %(domain)s), %(hostname)s, %(ip)s, 'AAAA')"
+_INSERT_SOA = "insert into records (domain_id, name, content, ttl, type) values ((select id from domains where name = %(hostname)s), %(hostname)s, 'localhost staticfloat@gmail.com 1', 86400, 'SOA')"
+_INSERT_DOMAIN = "insert into domains (name, type) values (%(hostname)s, 'NATIVE')"
+
+HOSTNAME = args[0]
+NEW_IPv4 = None
+NEW_IPv6 = None
+changed = False
+
+if settings.domain == 'auto':
+    settings.domain = str('.').join(HOSTNAME.split('.')[1:])
+
+if 'SSH_CLIENT' in os.environ:
+    sshclient = os.environ['SSH_CLIENT']
+else:
+    print "not an SSH connection, nothing to do"
+    sys.exit(1)
+
+ip = sshclient.split()[0]
+
+if re.match(r'^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$', ip):
+    NEW_IPv4 = ip
+elif re.match(r'^[0-9a-f]{1,4}:[0-9a-f:]*:[0-9a-f]{0,4}$', ip):
+    NEW_IPv6 = ip
+else:
+    print "IPv32?!"
+    sys.exit(1)
+
+
+import datetime
+
+db = database.connect(**settings.dbsettings)
+dbc = db.cursor()
+
+dbc.execute(_GET_DOMAIN, {'hostname': settings.domain})
+if not dbc.fetchone():
+    print "Creating new domain..."
+    dbc.execute(_INSERT_DOMAIN, {'hostname': settings.domain})
+
+    print "Creating new SOA record..."
+    dbc.execute(_INSERT_SOA, {'hostname': settings.domain})
+
+if NEW_IPv4:
+    dbc.execute(_GET_A, {'hostname': HOSTNAME})
+    r = dbc.fetchone()
+    if not r:
+        changed = True
+        print "Inserting A entry for %s -> %s" %(HOSTNAME, NEW_IPv4)
+        dbc.execute(_INSERT_A, {'hostname': HOSTNAME, 'ip': NEW_IPv4, 'domain':settings.domain})
+    else:
+        ipv4 = r[0]
+        if ipv4 != NEW_IPv4:
+            changed = True
+            print "Updating A entry for %s from %s to %s" % (HOSTNAME, ipv4, NEW_IPv4)
+            dbc.execute(_SET_A, {'hostname': HOSTNAME, 'ip': NEW_IPv4})
+
+if NEW_IPv6:
+    dbc.execute(_GET_AAAA, {'hostname': HOSTNAME})
+    r = dbc.fetchone()
+    if not r:
+        changed = True
+        print "Inserting AAAA entry for %s -> %s" %(HOSTNAME, NEW_IPv6)
+        dbc.execute(_INSERT_AAAA, {'hostname': HOSTNAME, 'ip': NEW_IPv6, 'domain':settings.domain})
+    else:
+        ipv6 = r[0]
+        if ipv6 != NEW_IPv6:
+            changed = True
+            print "Updating AAAA entry for %s from %s to %s" % (HOSTNAME, ipv6, NEW_IPv6)
+            dbc.execute(_SET_AAAA, {'hostname': HOSTNAME, 'ip': NEW_IPv6})
+
+if changed:
+    if settings.verbose:
+        print "We had changes, updating serial"
+    dbc.execute(_GET_SOA, {'hostname': settings.domain})
+    
+    soa = dbc.fetchone()
+    if not soa:
+        print "Uhhhh.... we don't have an SOA?!"
+    else:
+        if settings.verbose:
+            print "Old SOA record: %s" % soa
+        soa = soa[0].split()
+        today = datetime.date.today().strftime('%Y%m%d')
+        serial = soa[2]
+        if serial.startswith(today):
+            serial = str(int(serial)+1)
+        else:
+            serial = '%s00' % today
+        soa = ' '.join(soa[:2] + [serial] + soa[3:])
+        if settings.verbose:
+            print "New SOA record: %s" % soa
+        dbc.execute(_SET_SOA, {'hostname': settings.domain, 'soa': soa})
+    db.commit()
+
+dbc.close()
+db.close()

@@ -1,0 +1,40 @@
+version: '3'
+services:
+    powersql:
+        restart: unless-stopped
+        image: mysql
+        environment:
+            - MYSQL_USER=${POWERDNS_MYSQL_USER}
+            - MYSQL_PASSWORD=${POWERDNS_MYSQL_PASSWORD}
+            - MYSQL_DATABASE=${POWERDNS_MYSQL_USER}
+            - MYSQL_RANDOM_ROOT_PASSWORD=true
+
+    powerdns:
+        restart: unless-stopped
+        depends_on:
+            - powersql
+        image: psitrax/powerdns
+        environment:
+            - MYSQL_HOST=powersql
+            - MYSQL_USER=${POWERDNS_MYSQL_USER}
+            - MYSQL_PASS=${POWERDNS_MYSQL_PASSWORD}
+            - MYSQL_DB=${POWERDNS_MYSQL_USER}
+        ports:
+            - 53:53/udp
+            - 53:53/tcp
+
+    powerdyn:
+        restart: unless-stopped
+        depends_on:
+            - powersql
+        build:
+            context: .
+            args:
+                - DOMAIN=${POWERDNS_DOMAIN}
+                - MYSQL_HOST=powersql
+                - MYSQL_USER=${POWERDNS_MYSQL_USER}
+                - MYSQL_PASSWORD=${POWERDNS_MYSQL_PASSWORD}
+        ports:
+            - 2222:22/tcp
+volumes:
+    pdns_debugging:
