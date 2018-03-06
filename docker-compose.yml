@@ -35,5 +35,5 @@ services:
                 - MYSQL_USER=${POWERDNS_MYSQL_USER}
                 - MYSQL_PASSWORD=${POWERDNS_MYSQL_PASSWORD}
         ports:
-            - 2222:22/tcp
+            - 5322:22/tcp
 volumes:
