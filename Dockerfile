@@ -16,7 +16,10 @@ WORKDIR /home/powerdyn
 # Load in ssh key
 RUN mkdir .ssh
 RUN chmod 0700 .ssh
-COPY --chown=powerdyn:powerdyn powerdns_rsa.pub .ssh/authorized_keys
+#COPY --chown=powerdyn:powerdyn powerdns_rsa.pub .ssh/authorized_keys
+COPY powerdns_rsa.pub .ssh/authorized_keys
+USER root
+RUN chown powerdyn:powerdyn .ssh/authorized_keys
 RUN chmod 0600 .ssh/authorized_keys
 USER powerdyn
 
@@ -38,7 +41,11 @@ dbpass = ${MYSQL_PASSWORD}\n\
 " > .powerdyn.conf
 
 # Copy in powerdyn
-COPY --chown=powerdyn:powerdyn powerdyn powerdyn
+#COPY --chown=powerdyn:powerdyn powerdyn powerdyn
+COPY powerdyn powerdyn
+
+USER root
+RUN chown powerdyn:powerdyn powerdyn
 
 # By default, we run openssh
 WORKDIR /

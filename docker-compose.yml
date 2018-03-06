@@ -37,4 +37,3 @@ services:
         ports:
             - 2222:22/tcp
 volumes:
-    pdns_debugging:
